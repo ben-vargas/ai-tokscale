@@ -597,6 +597,7 @@ async function main() {
       ];
       const piSessions = path.join(homeDir, ".pi", "agent", "sessions");
       const kimiSessions = path.join(homeDir, ".kimi", "sessions");
+      const octofriendDb = path.join(homeDir, ".local", "share", "octofriend", "sqlite.db");
 
       let localMessages: ParsedMessages | null = null;
       try {
@@ -716,6 +717,15 @@ async function main() {
           label: "Kimi CLI",
           sessionsPath: kimiSessions,
           messageCount: localMessages.kimiCount,
+          headlessSupported: false,
+          headlessPaths: [],
+          headlessMessageCount: 0,
+        },
+        {
+          source: "synthetic",
+          label: "Synthetic",
+          sessionsPath: octofriendDb,
+          messageCount: localMessages.syntheticCount,
           headlessSupported: false,
           headlessPaths: [],
           headlessMessageCount: 0,
