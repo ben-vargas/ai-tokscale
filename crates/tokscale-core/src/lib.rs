@@ -1376,7 +1376,8 @@ pub fn parsed_to_unified(msg: &ParsedMessage, cost: f64) -> UnifiedMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_model_for_grouping, GroupBy};
+    use super::{normalize_model_for_grouping, parse_all_messages_with_pricing, pricing, GroupBy};
+    use std::collections::HashMap;
     use std::str::FromStr;
 
     #[test]
@@ -1497,5 +1498,28 @@ mod tests {
             GroupBy::from_str("client , provider , model").unwrap(),
             GroupBy::ClientProviderModel
         );
+    }
+
+    #[test]
+    fn test_cursor_parse_path_reprices_zero_cost_composer_1_5_rows() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cursor_cache_dir = temp_dir.path().join(".config/tokscale/cursor-cache");
+        std::fs::create_dir_all(&cursor_cache_dir).unwrap();
+
+        let csv = r#"Date,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
+"2026-03-04T12:00:00.000Z","Included","Composer 1.5","No","1200","1000","5000","2000","8000","0""#;
+        std::fs::write(cursor_cache_dir.join("usage.csv"), csv).unwrap();
+
+        let pricing = pricing::PricingService::new(HashMap::new(), HashMap::new());
+        let messages = parse_all_messages_with_pricing(
+            temp_dir.path().to_str().unwrap(),
+            &["cursor".to_string()],
+            &pricing,
+        );
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].client, "cursor");
+        assert_eq!(messages[0].model_id, "Composer 1.5");
+        assert!(messages[0].cost > 0.0);
     }
 }
