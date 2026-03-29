@@ -38,7 +38,7 @@ export const SOURCE_DISPLAY_NAMES: Record<string, string> = {
   qwen: "Qwen",
   roocode: "Roo Code",
   kilocode: "Kilo",
-  kilo: "Kilo CLI",
+  kilo: "Kilo",
   mux: "Mux",
   synthetic: "Synthetic",
 };

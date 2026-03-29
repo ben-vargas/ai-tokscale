@@ -821,7 +821,7 @@ fn parse_all_messages_with_pricing(
     }
 
     let kilocode_outcomes: Vec<CachedParseOutcome> = scan_result
-        .get(ClientId::KiloCode)
+        .get(ClientId::Kilo)
         .par_iter()
         .map(|path| {
             load_or_parse_source(path, &source_cache, pricing, |path| {
@@ -830,7 +830,12 @@ fn parse_all_messages_with_pricing(
         })
         .collect();
     for outcome in kilocode_outcomes {
-        all_messages.extend(outcome.messages);
+        all_messages.extend(outcome.messages.into_iter().map(|mut msg| {
+            if msg.client == "kilocode" {
+                msg.client = "kilo".to_string();
+            }
+            msg
+        }));
         if let Some(entry) = outcome.cache_entry {
             source_cache.insert(entry);
         }
@@ -1473,7 +1478,7 @@ pub fn parse_local_clients(options: LocalParseOptions) -> Result<ParsedMessages,
     messages.extend(roocode_msgs);
 
     let kilocode_msgs: Vec<ParsedMessage> = scan_result
-        .get(ClientId::KiloCode)
+        .get(ClientId::Kilo)
         .par_iter()
         .flat_map(|path| {
             sessions::kilocode::parse_kilocode_file(path)
@@ -1482,8 +1487,8 @@ pub fn parse_local_clients(options: LocalParseOptions) -> Result<ParsedMessages,
                 .collect::<Vec<_>>()
         })
         .collect();
-    let kilocode_count = kilocode_msgs.len() as i32;
-    counts.set(ClientId::KiloCode, kilocode_count);
+    let kilo_vscode_count = kilocode_msgs.len() as i32;
+    counts.set(ClientId::Kilo, kilo_vscode_count);
     messages.extend(kilocode_msgs);
 
     let mux_msgs: Vec<ParsedMessage> = scan_result
@@ -1507,7 +1512,7 @@ pub fn parse_local_clients(options: LocalParseOptions) -> Result<ParsedMessages,
             .map(|msg| unified_to_parsed(&msg))
             .collect();
         let count = kilo_msgs.len() as i32;
-        counts.set(ClientId::Kilo, count);
+        counts.add(ClientId::Kilo, count);
         messages.extend(kilo_msgs);
         count
     } else {
