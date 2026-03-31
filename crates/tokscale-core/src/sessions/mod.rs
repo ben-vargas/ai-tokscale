@@ -28,6 +28,8 @@ pub struct UnifiedMessage {
     pub model_id: String,
     pub provider_id: String,
     pub session_id: String,
+    pub workspace_key: Option<String>,
+    pub workspace_label: Option<String>,
     pub timestamp: i64,
     pub date: String,
     pub tokens: TokenBreakdown,
@@ -217,6 +219,8 @@ impl UnifiedMessage {
             model_id: model_id.into(),
             provider_id: provider_id.into(),
             session_id: session_id.into(),
+            workspace_key: None,
+            workspace_label: None,
             timestamp,
             date,
             tokens,
@@ -224,6 +228,15 @@ impl UnifiedMessage {
             agent,
             dedup_key,
         }
+    }
+
+    pub fn set_workspace(
+        &mut self,
+        workspace_key: Option<String>,
+        workspace_label: Option<String>,
+    ) {
+        self.workspace_key = workspace_key;
+        self.workspace_label = workspace_label;
     }
 
     pub(crate) fn refresh_derived_fields(&mut self) {
@@ -234,6 +247,46 @@ impl UnifiedMessage {
         self.timestamp = timestamp;
         self.refresh_derived_fields();
     }
+}
+
+pub fn normalize_workspace_key(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let preserve_unc_prefix = trimmed.starts_with("\\\\") || trimmed.starts_with("//");
+    let mut normalized = trimmed.replace('\\', "/");
+
+    if preserve_unc_prefix {
+        let body = normalized.trim_start_matches('/');
+        let mut collapsed = body.to_string();
+        while collapsed.contains("//") {
+            collapsed = collapsed.replace("//", "/");
+        }
+        normalized = format!("//{}", collapsed);
+    } else {
+        while normalized.contains("//") {
+            normalized = normalized.replace("//", "/");
+        }
+    }
+
+    let minimum_len = if preserve_unc_prefix { 2 } else { 1 };
+    if normalized.len() > minimum_len {
+        normalized = normalized.trim_end_matches('/').to_string();
+    }
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+pub fn workspace_label_from_key(key: &str) -> Option<String> {
+    key.rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
 }
 
 /// Convert Unix milliseconds to a local YYYY-MM-DD date string.
@@ -306,6 +359,44 @@ mod tests {
         assert_eq!(msg.date, timestamp_to_date(1733011200000));
         assert_eq!(msg.cost, 0.05);
         assert_eq!(msg.agent, None);
+        assert_eq!(msg.workspace_key, None);
+        assert_eq!(msg.workspace_label, None);
+    }
+
+    #[test]
+    fn test_normalize_workspace_key_normalizes_slashes_and_trailing_separator() {
+        assert_eq!(
+            normalize_workspace_key(r"C:\Users\alice\repo\"),
+            Some("C:/Users/alice/repo".to_string())
+        );
+        assert_eq!(
+            normalize_workspace_key("/Users/alice//repo/"),
+            Some("/Users/alice/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_workspace_key_preserves_unc_prefix() {
+        assert_eq!(
+            normalize_workspace_key(r"\\server\share\repo\"),
+            Some("//server/share/repo".to_string())
+        );
+        assert_eq!(
+            normalize_workspace_key("//server//share///repo/"),
+            Some("//server/share/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_workspace_label_from_key_uses_last_path_segment() {
+        assert_eq!(
+            workspace_label_from_key("/Users/alice/my-repo"),
+            Some("my-repo".to_string())
+        );
+        assert_eq!(
+            workspace_label_from_key("encoded-project-key"),
+            Some("encoded-project-key".to_string())
+        );
     }
 
     #[test]

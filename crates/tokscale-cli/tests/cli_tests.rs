@@ -158,12 +158,27 @@ fn create_timezone_boundary_fixture_dir() -> TempDir {
     tmp
 }
 
+fn create_qwen_workspace_fixture_dir() -> TempDir {
+    let tmp = TempDir::new().expect("failed to create temp dir");
+    let base = tmp.path();
+    prime_pricing_cache(base);
+
+    let session = base.join(".qwen/projects/demo-workspace/chats");
+    fs::create_dir_all(&session).unwrap();
+
+    let msg = r#"{"type":"assistant","model":"qwen3.5-plus","timestamp":"2026-02-23T14:24:56.857Z","sessionId":"demo-session","usageMetadata":{"promptTokenCount":12414,"candidatesTokenCount":76,"thoughtsTokenCount":39,"cachedContentTokenCount":0}}"#;
+    fs::write(session.join("session-1.jsonl"), msg).unwrap();
+
+    tmp
+}
+
 /// Build a Command pointing HOME at the given temp dir, with --no-spinner and --opencode flags.
 fn cmd_with_home(tmp: &Path) -> Command {
     let mut cmd = cargo_bin_cmd!("tokscale");
     cmd.env("HOME", tmp)
         .env("XDG_DATA_HOME", tmp.join(".local/share"))
-        .env("XDG_CACHE_HOME", tmp.join(".cache"));
+        .env("XDG_CACHE_HOME", tmp.join(".cache"))
+        .env("TOKSCALE_PRICING_CACHE_ONLY", "1");
     cmd
 }
 
@@ -332,9 +347,12 @@ fn test_headless_command_invalid_client() {
 
 #[test]
 fn test_models_with_invalid_date_format() {
-    let mut cmd = cargo_bin_cmd!("tokscale");
-    cmd.arg("models")
+    let tmp = create_empty_fixture_dir();
+    cmd_with_home(tmp.path())
+        .arg("models")
         .arg("--light")
+        .arg("--opencode")
+        .arg("--no-spinner")
         .arg("--since")
         .arg("invalid-date")
         .assert()
@@ -343,9 +361,12 @@ fn test_models_with_invalid_date_format() {
 
 #[test]
 fn test_models_with_invalid_year() {
-    let mut cmd = cargo_bin_cmd!("tokscale");
-    cmd.arg("models")
+    let tmp = create_empty_fixture_dir();
+    cmd_with_home(tmp.path())
+        .arg("models")
         .arg("--light")
+        .arg("--opencode")
+        .arg("--no-spinner")
         .arg("--year")
         .arg("not-a-year")
         .assert()
@@ -820,7 +841,71 @@ fn test_models_json_with_group_by_model() {
             entry.get("mergedClients").is_some(),
             "group-by model entries should have mergedClients field"
         );
+        assert!(
+            entry.get("workspaceKey").is_none(),
+            "group-by model entries should not expose workspaceKey"
+        );
+        assert!(
+            entry.get("workspaceLabel").is_none(),
+            "group-by model entries should not expose workspaceLabel"
+        );
     }
+}
+
+#[test]
+fn test_models_group_by_workspace_model_uses_unknown_bucket_for_unsupported_clients() {
+    let tmp = create_temp_fixture_dir();
+    let output = cmd_with_home(tmp.path())
+        .args(["models", "--json", "--opencode", "--no-spinner"])
+        .args(["--group-by", "workspace,model"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["groupBy"].as_str().unwrap(), "workspace,model");
+
+    let entries = json["entries"].as_array().unwrap();
+    assert!(!entries.is_empty());
+    for entry in entries {
+        assert!(
+            entry.get("workspaceKey").is_some(),
+            "workspace grouping entries should always expose workspaceKey"
+        );
+        assert!(entry["workspaceKey"].is_null());
+        assert!(
+            entry.get("workspaceLabel").is_some(),
+            "workspace grouping entries should always expose workspaceLabel"
+        );
+        assert_eq!(
+            entry["workspaceLabel"].as_str().unwrap(),
+            "Unknown workspace"
+        );
+    }
+}
+
+#[test]
+fn test_models_group_by_workspace_model_surfaces_workspace_fields_for_qwen() {
+    let tmp = create_qwen_workspace_fixture_dir();
+    let output = cmd_with_home(tmp.path())
+        .args(["models", "--json", "--qwen", "--no-spinner"])
+        .args(["--group-by", "workspace-model"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["groupBy"].as_str().unwrap(), "workspace,model");
+
+    let entries = json["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["workspaceKey"].as_str().unwrap(),
+        "demo-workspace"
+    );
+    assert_eq!(
+        entries[0]["workspaceLabel"].as_str().unwrap(),
+        "demo-workspace"
+    );
+    assert_eq!(entries[0]["model"].as_str().unwrap(), "qwen3.5-plus");
 }
 
 // ── Pricing command tests ──────────────────────────────────────────────────
@@ -891,8 +976,9 @@ fn test_pricing_command_invalid_provider() {
 
 #[test]
 fn test_clients_command() {
-    let mut cmd = cargo_bin_cmd!("tokscale");
-    cmd.arg("clients")
+    let tmp = create_empty_fixture_dir();
+    cmd_with_home(tmp.path())
+        .arg("clients")
         .assert()
         .success()
         .stdout(predicate::str::contains("OpenCode").or(predicate::str::contains("opencode")))
@@ -901,7 +987,8 @@ fn test_clients_command() {
 
 #[test]
 fn test_clients_json() {
-    let output = cargo_bin_cmd!("tokscale")
+    let tmp = create_empty_fixture_dir();
+    let output = cmd_with_home(tmp.path())
         .args(["clients", "--json"])
         .output()
         .unwrap();
