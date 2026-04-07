@@ -294,17 +294,17 @@ tokscale --claude
 # Codex CLIの使用量のみ表示
 tokscale --codex
 
+# OpenClawの使用量のみ表示
+tokscale --openclaw
+
+# Piの使用量のみ表示
+tokscale --pi
+
 # Gemini CLIの使用量のみ表示
 tokscale --gemini
 
 # Cursor IDEの使用量のみ表示（事前に`tokscale cursor login`が必要）
 tokscale --cursor
-
-# Kimi CLIの使用量のみ表示
-tokscale --kimi
-
-# Qwen CLIの使用量のみ表示
-tokscale --qwen
 
 # Ampの使用量のみ表示
 tokscale --amp
@@ -312,14 +312,14 @@ tokscale --amp
 # Droidの使用量のみ表示
 tokscale --droid
 
-# OpenClawの使用量のみ表示
-tokscale --openclaw
-
 # Hermes Agentの使用量のみ表示
 tokscale --hermes
 
-# Piの使用量のみ表示
-tokscale --pi
+# Kimi CLIの使用量のみ表示
+tokscale --kimi
+
+# Qwen CLIの使用量のみ表示
+tokscale --qwen
 
 # Roo Codeの使用量のみ表示
 tokscale --roocode

@@ -293,17 +293,17 @@ tokscale --claude
 # Codex CLI 사용량만 표시
 tokscale --codex
 
+# OpenClaw 사용량만 표시
+tokscale --openclaw
+
+# Pi 사용량만 표시
+tokscale --pi
+
 # Gemini CLI 사용량만 표시
 tokscale --gemini
 
 # Cursor IDE 사용량만 표시 (먼저 `tokscale cursor login` 필요)
 tokscale --cursor
-
-# Kimi CLI 사용량만 표시
-tokscale --kimi
-
-# Qwen CLI 사용량만 표시
-tokscale --qwen
 
 # Amp 사용량만 표시
 tokscale --amp
@@ -311,14 +311,14 @@ tokscale --amp
 # Droid 사용량만 표시
 tokscale --droid
 
-# OpenClaw 사용량만 표시
-tokscale --openclaw
-
 # Hermes Agent 사용량만 표시
 tokscale --hermes
 
-# Pi 사용량만 표시
-tokscale --pi
+# Kimi CLI 사용량만 표시
+tokscale --kimi
+
+# Qwen CLI 사용량만 표시
+tokscale --qwen
 
 # Roo Code 사용량만 표시
 tokscale --roocode

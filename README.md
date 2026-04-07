@@ -294,6 +294,12 @@ tokscale --claude
 # Show only Codex CLI usage
 tokscale --codex
 
+# Show only OpenClaw usage
+tokscale --openclaw
+
+# Show only Pi usage
+tokscale --pi
+
 # Show only Gemini CLI usage
 tokscale --gemini
 
@@ -306,14 +312,8 @@ tokscale --amp
 # Show only Droid usage
 tokscale --droid
 
-# Show only OpenClaw usage
-tokscale --openclaw
-
 # Show only Hermes Agent usage
 tokscale --hermes
-
-# Show only Pi usage
-tokscale --pi
 
 # Show only Kimi CLI usage
 tokscale --kimi
