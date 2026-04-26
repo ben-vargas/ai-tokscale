@@ -1369,6 +1369,7 @@ fn client_display_name(client: &str) -> Option<&'static str> {
         "kilo" => Some("Kilo CLI"),
         "mux" => Some("Mux"),
         "crush" => Some("Crush"),
+        "goose" => Some("Goose"),
         "synthetic" => Some("Synthetic"),
         _ => None,
     }
@@ -1398,6 +1399,7 @@ fn client_logo_url(client_name: &str) -> Option<&'static str> {
         "Crush" => Some(
             "https://raw.githubusercontent.com/junhoyeo/tokscale/6b483d0f2de3717266dec8faed13acd067f90ff3/.github/assets/client-crush.png",
         ),
+        "Goose" => Some("https://tokscale.ai/assets/logos/goose.png"),
         "Synthetic" => Some("https://tokscale.ai/assets/logos/synthetic.png"),
         _ => None,
     }
