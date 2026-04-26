@@ -1371,6 +1371,7 @@ fn client_display_name(client: &str) -> Option<&'static str> {
         "mux" => Some("Mux"),
         "crush" => Some("Crush"),
         "goose" => Some("Goose"),
+        "antigravity" => Some("Antigravity"),
         "synthetic" => Some("Synthetic"),
         _ => None,
     }
@@ -1404,6 +1405,7 @@ fn client_logo_url(client_name: &str) -> Option<&'static str> {
         "Goose" => Some(
             "https://raw.githubusercontent.com/junhoyeo/tokscale/main/.github/assets/client-goose.png",
         ),
+        "Antigravity" => Some("https://antigravity.google/favicon.ico"),
         "Synthetic" => Some("https://tokscale.ai/assets/logos/synthetic.png"),
         _ => None,
     }
@@ -2234,6 +2236,16 @@ mod tests {
     }
 
     #[test]
+    fn test_client_display_name_goose() {
+        assert_eq!(client_display_name("goose"), Some("Goose"));
+    }
+
+    #[test]
+    fn test_client_display_name_antigravity() {
+        assert_eq!(client_display_name("antigravity"), Some("Antigravity"));
+    }
+
+    #[test]
     fn test_client_display_name_unknown() {
         assert_eq!(client_display_name("unknown"), None);
         assert_eq!(client_display_name(""), None);
@@ -2373,6 +2385,24 @@ mod tests {
             Some(
                 "https://raw.githubusercontent.com/junhoyeo/tokscale/6b483d0f2de3717266dec8faed13acd067f90ff3/.github/assets/client-crush.png"
             )
+        );
+    }
+
+    #[test]
+    fn test_client_logo_url_goose() {
+        assert_eq!(
+            client_logo_url("Goose"),
+            Some(
+                "https://raw.githubusercontent.com/junhoyeo/tokscale/main/.github/assets/client-goose.png"
+            )
+        );
+    }
+
+    #[test]
+    fn test_client_logo_url_antigravity() {
+        assert_eq!(
+            client_logo_url("Antigravity"),
+            Some("https://antigravity.google/favicon.ico")
         );
     }
 
