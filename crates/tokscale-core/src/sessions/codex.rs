@@ -176,6 +176,39 @@ fn session_id_from_path(path: &Path) -> String {
         .to_string()
 }
 
+fn codex_workspace_from_cwd(cwd: &str) -> (Option<String>, Option<String>) {
+    let workspace_key = normalize_codex_workspace_key(cwd);
+    let workspace_label = workspace_key.as_deref().and_then(workspace_label_from_key);
+
+    if workspace_label.is_none() {
+        return (None, None);
+    }
+
+    (workspace_key, workspace_label)
+}
+
+fn normalize_codex_workspace_key(raw: &str) -> Option<String> {
+    let normalized = normalize_workspace_key(raw)?;
+    if normalized.chars().any(char::is_control) {
+        return None;
+    }
+
+    if looks_like_explicit_workspace_path(&normalized) {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn looks_like_explicit_workspace_path(path: &str) -> bool {
+    if path.starts_with("//") || path.starts_with('/') {
+        return true;
+    }
+
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+}
+
 fn parse_codex_reader<R: BufRead>(
     mut reader: R,
     session_id: &str,
@@ -214,6 +247,29 @@ fn parse_codex_reader<R: BufRead>(
         buffer.extend_from_slice(trimmed.as_bytes());
         if let Ok(entry) = simd_json::from_slice::<CodexEntry>(&mut buffer) {
             if let Some(payload) = entry.payload {
+                let payload_model = extract_model(&payload);
+                let is_token_count = entry.entry_type == "event_msg"
+                    && payload.payload_type.as_deref() == Some("token_count");
+                let info_model = if is_token_count {
+                    payload.info.as_ref().and_then(extract_model_from_info)
+                } else {
+                    None
+                };
+                let event_model = payload_model.clone().or(info_model.clone());
+
+                if !pending_model_messages.is_empty()
+                    && event_model.is_none()
+                    && !is_token_count
+                    && entry.entry_type != "session_meta"
+                {
+                    flush_pending_model_messages_as_unknown(
+                        &mut pending_model_messages,
+                        &mut messages,
+                        &mut fallback_timestamp_indices,
+                        &mut unresolved_model_events,
+                    );
+                }
+
                 if entry.entry_type == "session_meta" {
                     if payload.source.as_deref() == Some("exec") {
                         state.session_is_headless = true;
@@ -225,16 +281,14 @@ fn parse_codex_reader<R: BufRead>(
                         state.session_agent = Some(nickname.clone());
                     }
                     if let Some(ref cwd) = payload.cwd {
-                        state.session_workspace_key = normalize_workspace_key(cwd);
-                        state.session_workspace_label = state
-                            .session_workspace_key
-                            .as_deref()
-                            .and_then(workspace_label_from_key);
+                        let (workspace_key, workspace_label) = codex_workspace_from_cwd(cwd);
+                        state.session_workspace_key = workspace_key;
+                        state.session_workspace_label = workspace_label;
                     }
                 }
                 // Extract model from turn_context
                 if entry.entry_type == "turn_context" {
-                    state.current_model = extract_model(&payload);
+                    state.current_model = payload_model.clone();
                     if let Some(model) = state.current_model.clone() {
                         flush_pending_model_messages(
                             &mut pending_model_messages,
@@ -247,37 +301,24 @@ fn parse_codex_reader<R: BufRead>(
                 }
 
                 // Process token_count events
-                if entry.entry_type == "event_msg"
-                    && payload.payload_type.as_deref() == Some("token_count")
-                {
-                    // Try to extract model from payload
-                    if let Some(model) = extract_model(&payload) {
-                        state.current_model = Some(model.clone());
-                        flush_pending_model_messages(
-                            &mut pending_model_messages,
-                            &mut messages,
-                            &mut fallback_timestamp_indices,
-                            &model,
-                        );
-                    }
-
+                if is_token_count {
                     let info = match payload.info {
                         Some(i) => i,
                         None => continue,
                     };
 
-                    // Try to extract model from info
-                    if let Some(model) = info.model.clone().or(info.model_name.clone()) {
+                    let model = payload_model
+                        .or(info_model)
+                        .or_else(|| state.current_model.clone());
+                    if let Some(ref model) = model {
                         state.current_model = Some(model.clone());
                         flush_pending_model_messages(
                             &mut pending_model_messages,
                             &mut messages,
                             &mut fallback_timestamp_indices,
-                            &model,
+                            model,
                         );
                     }
-
-                    let model = state.current_model.clone();
 
                     // Use last_token_usage as the primary increment source.
                     // Upstream totals are mutable snapshots (compaction, context-window
@@ -399,13 +440,22 @@ fn parse_codex_reader<R: BufRead>(
             &state.session_agent,
             state.session_is_headless,
         );
-        if let Some(model) = state.current_model.clone() {
-            flush_pending_model_messages(
-                &mut pending_model_messages,
-                &mut messages,
-                &mut fallback_timestamp_indices,
-                &model,
-            );
+        if !pending_model_messages.is_empty() {
+            if let Some(model) = state.current_model.clone() {
+                flush_pending_model_messages(
+                    &mut pending_model_messages,
+                    &mut messages,
+                    &mut fallback_timestamp_indices,
+                    &model,
+                );
+            } else {
+                flush_pending_model_messages_as_unknown(
+                    &mut pending_model_messages,
+                    &mut messages,
+                    &mut fallback_timestamp_indices,
+                    &mut unresolved_model_events,
+                );
+            }
         }
 
         if let Some((mut msg, used_fallback_timestamp)) = headless_message {
@@ -417,18 +467,22 @@ fn parse_codex_reader<R: BufRead>(
             if used_fallback_timestamp {
                 fallback_timestamp_indices.push(messages.len() - 1);
             }
+            continue;
+        }
+
+        let mut json_probe = trimmed.as_bytes().to_vec();
+        if simd_json::from_slice::<Value>(&mut json_probe).is_err() {
+            parse_succeeded = false;
+            continue;
         }
     }
 
-    if !pending_model_messages.is_empty() {
-        unresolved_model_events = true;
-        flush_pending_model_messages(
-            &mut pending_model_messages,
-            &mut messages,
-            &mut fallback_timestamp_indices,
-            "unknown",
-        );
-    }
+    flush_pending_model_messages_as_unknown(
+        &mut pending_model_messages,
+        &mut messages,
+        &mut fallback_timestamp_indices,
+        &mut unresolved_model_events,
+    );
 
     ParsedCodexFile {
         messages,
@@ -453,6 +507,25 @@ fn flush_pending_model_messages(
             fallback_timestamp_indices.push(messages.len() - 1);
         }
     }
+}
+
+fn flush_pending_model_messages_as_unknown(
+    pending_model_messages: &mut Vec<(UnifiedMessage, bool)>,
+    messages: &mut Vec<UnifiedMessage>,
+    fallback_timestamp_indices: &mut Vec<usize>,
+    unresolved_model_events: &mut bool,
+) {
+    if pending_model_messages.is_empty() {
+        return;
+    }
+
+    *unresolved_model_events = true;
+    flush_pending_model_messages(
+        pending_model_messages,
+        messages,
+        fallback_timestamp_indices,
+        "unknown",
+    );
 }
 
 /// Parse a Codex JSONL file with stateful tracking
@@ -519,16 +592,14 @@ fn extract_model(payload: &CodexPayload) -> Option<String> {
         .filter(|s| !s.is_empty())
         .or(payload.model.clone().filter(|s| !s.is_empty()))
         .or(payload.model_name.clone().filter(|s| !s.is_empty()))
-        .or(payload
-            .info
-            .as_ref()
-            .and_then(|i| i.model.clone())
-            .filter(|s| !s.is_empty()))
-        .or(payload
-            .info
-            .as_ref()
-            .and_then(|i| i.model_name.clone())
-            .filter(|s| !s.is_empty()))
+        .or(payload.info.as_ref().and_then(extract_model_from_info))
+}
+
+fn extract_model_from_info(info: &CodexInfo) -> Option<String> {
+    info.model
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or(info.model_name.clone().filter(|s| !s.is_empty()))
 }
 
 struct CodexHeadlessUsage {
@@ -1275,6 +1346,78 @@ mod tests {
     }
 
     #[test]
+    fn test_inaccessible_cwd_still_parses_token_usage() {
+        let line1 = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"source":"interactive","cwd":"/path/that/does/not/exist/demo-repo"}}"#;
+        let line2 = r#"{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"model":"gpt-5.2"}}"#;
+        let line3 = r#"{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1}}}}"#;
+        let content = format!("{}\n{}\n{}", line1, line2, line3);
+        let file = create_test_file(&content);
+
+        let messages = parse_codex_file(file.path());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].tokens.input, 8);
+        assert_eq!(messages[0].tokens.output, 3);
+        assert_eq!(messages[0].tokens.cache_read, 2);
+        assert_eq!(
+            messages[0].workspace_key.as_deref(),
+            Some("/path/that/does/not/exist/demo-repo")
+        );
+        assert_eq!(messages[0].workspace_label.as_deref(), Some("demo-repo"));
+    }
+
+    #[test]
+    fn test_session_meta_empty_cwd_clears_workspace_metadata() {
+        let line1 = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"source":"interactive","cwd":"   "}}"#;
+        let line2 = r#"{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"model":"gpt-5.2"}}"#;
+        let line3 = r#"{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1}}}}"#;
+        let content = format!("{}\n{}\n{}", line1, line2, line3);
+        let file = create_test_file(&content);
+
+        let messages = parse_codex_file(file.path());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].workspace_key, None);
+        assert_eq!(messages[0].workspace_label, None);
+        assert_eq!(messages[0].tokens.input, 8);
+    }
+
+    #[test]
+    fn test_session_meta_malformed_cwd_clears_workspace_metadata() {
+        let line1 = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"source":"interactive","cwd":"file:///Users/alice/demo-repo"}}"#;
+        let line2 = r#"{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"model":"gpt-5.2"}}"#;
+        let line3 = r#"{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1}}}}"#;
+        let content = format!("{}\n{}\n{}", line1, line2, line3);
+        let file = create_test_file(&content);
+
+        let messages = parse_codex_file(file.path());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].workspace_key, None);
+        assert_eq!(messages[0].workspace_label, None);
+        assert_eq!(messages[0].tokens.input, 8);
+    }
+
+    #[test]
+    fn test_session_meta_path_like_noncanonical_cwd_normalizes_consistently() {
+        let line1 = r#"{"timestamp":"2026-01-01T00:00:00Z","type":"session_meta","payload":{"source":"interactive","cwd":"//server//share///demo-repo/"}}"#;
+        let line2 = r#"{"timestamp":"2026-01-01T00:00:01Z","type":"turn_context","payload":{"model":"gpt-5.2"}}"#;
+        let line3 = r#"{"timestamp":"2026-01-01T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1}}}}"#;
+        let content = format!("{}\n{}\n{}", line1, line2, line3);
+        let file = create_test_file(&content);
+
+        let messages = parse_codex_file(file.path());
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].workspace_key.as_deref(),
+            Some("//server/share/demo-repo")
+        );
+        assert_eq!(messages[0].workspace_label.as_deref(), Some("demo-repo"));
+        assert_eq!(messages[0].tokens.input, 8);
+    }
+
+    #[test]
     fn test_cached_tokens_takes_max_of_both_fields() {
         let usage = CodexTokenUsage {
             input_tokens: Some(100),
@@ -1346,5 +1489,48 @@ mod tests {
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].model_id, "gpt-4o");
+    }
+
+    #[test]
+    fn test_pending_model_messages_do_not_bind_across_unrelated_turns() {
+        let file = create_test_file(concat!(
+            r#"{"type":"session_meta","payload":{"source":"interactive","model_provider":"openai"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-27T10:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-27T10:00:02Z","type":"assistant_message"}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-27T10:00:04Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-27T10:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":15,"cached_input_tokens":3,"output_tokens":5},"last_token_usage":{"input_tokens":5,"cached_input_tokens":1,"output_tokens":2}}}}"#,
+            "\n"
+        ));
+
+        let parsed = parse_codex_file_incremental(file.path(), 0, CodexParseState::default());
+
+        assert!(parsed.parse_succeeded);
+        assert!(parsed.unresolved_model_events);
+        assert_eq!(parsed.messages.len(), 2);
+        assert_eq!(parsed.messages[0].model_id, "unknown");
+        assert_eq!(parsed.messages[1].model_id, "gpt-5.5");
+    }
+
+    #[test]
+    fn test_token_count_ignores_empty_info_model_until_later_valid_model() {
+        let file = create_test_file(concat!(
+            r#"{"type":"session_meta","payload":{"source":"interactive","model_provider":"openai"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-27T10:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"","model_name":"","total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3}}}}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-27T10:00:04Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+            "\n"
+        ));
+
+        let parsed = parse_codex_file_incremental(file.path(), 0, CodexParseState::default());
+
+        assert!(parsed.parse_succeeded);
+        assert!(!parsed.unresolved_model_events);
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].model_id, "gpt-5.5");
     }
 }
