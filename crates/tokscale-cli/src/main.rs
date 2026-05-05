@@ -696,6 +696,7 @@ pub enum ClientFilter {
     Goose,
     Codebuff,
     Antigravity,
+    Zed,
     Synthetic,
 }
 
@@ -726,6 +727,7 @@ impl ClientFilter {
             Self::Goose => "goose",
             Self::Codebuff => "codebuff",
             Self::Antigravity => "antigravity",
+            Self::Zed => "zed",
             Self::Synthetic => "synthetic",
         }
     }
@@ -759,6 +761,7 @@ impl ClientFilter {
             Self::Goose => Some(ClientId::Goose),
             Self::Codebuff => Some(ClientId::Codebuff),
             Self::Antigravity => Some(ClientId::Antigravity),
+            Self::Zed => Some(ClientId::Zed),
             Self::Synthetic => None,
         }
     }
@@ -789,6 +792,7 @@ impl ClientFilter {
             ClientId::Goose => Self::Goose,
             ClientId::Codebuff => Self::Codebuff,
             ClientId::Antigravity => Self::Antigravity,
+            ClientId::Zed => Self::Zed,
         }
     }
 
@@ -884,6 +888,8 @@ pub struct ClientFlags {
     #[arg(long, hide = true)]
     pub antigravity: bool,
     #[arg(long, hide = true)]
+    pub zed: bool,
+    #[arg(long, hide = true)]
     pub synthetic: bool,
 }
 
@@ -937,7 +943,7 @@ fn build_client_filter_with_defaults(
         }
     }
 
-    let legacy: [(bool, ClientFilter); 22] = [
+    let legacy: [(bool, ClientFilter); 23] = [
         (flags.opencode, ClientFilter::Opencode),
         (flags.claude, ClientFilter::Claude),
         (flags.codex, ClientFilter::Codex),
@@ -959,6 +965,7 @@ fn build_client_filter_with_defaults(
         (flags.copilot, ClientFilter::Copilot),
         (flags.goose, ClientFilter::Goose),
         (flags.antigravity, ClientFilter::Antigravity),
+        (flags.zed, ClientFilter::Zed),
         (flags.synthetic, ClientFilter::Synthetic),
     ];
 
@@ -4626,6 +4633,7 @@ mod tests {
             crush: true,
             goose: true,
             antigravity: true,
+            zed: true,
             synthetic: true,
             ..ClientFlags::default()
         };
@@ -4657,6 +4665,7 @@ mod tests {
             "crush",
             "goose",
             "antigravity",
+            "zed",
             "synthetic",
         ] {
             assert!(
@@ -5035,6 +5044,7 @@ mod tests {
     fn test_default_submit_clients_excludes_crush() {
         let clients = default_submit_clients();
         assert!(clients.contains(&"synthetic".to_string()));
+        assert!(clients.contains(&"zed".to_string()));
         assert!(!clients.contains(&"crush".to_string()));
     }
 
@@ -5068,6 +5078,23 @@ mod tests {
         assert_eq!(
             ClientFilter::from_client_id(tokscale_core::ClientId::Goose),
             ClientFilter::Goose
+        );
+    }
+
+    #[test]
+    fn test_client_filter_zed_round_trip() {
+        assert_eq!(
+            ClientFilter::from_filter_str("zed"),
+            Some(ClientFilter::Zed)
+        );
+        assert_eq!(ClientFilter::Zed.as_filter_str(), "zed");
+        assert_eq!(
+            ClientFilter::Zed.to_client_id(),
+            Some(tokscale_core::ClientId::Zed)
+        );
+        assert_eq!(
+            ClientFilter::from_client_id(tokscale_core::ClientId::Zed),
+            ClientFilter::Zed
         );
     }
 
