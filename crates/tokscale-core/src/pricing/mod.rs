@@ -81,6 +81,11 @@ impl PricingService {
             ("composer-2", 5e-7, 2.5e-6, Some(2e-7)),
             ("composer 2 fast", 1.5e-6, 7.5e-6, Some(3.5e-7)),
             ("composer-2-fast", 1.5e-6, 7.5e-6, Some(3.5e-7)),
+            // Composer 2: $0.50/$2.50 per 1M input/output, $0.20/M cache read; cache creation free
+            // Composer 2 Fast: $1.50/$7.50 per 1M, $0.35/M cache read; cache creation free
+            // Source: Cursor docs (cursor.com/docs/models#model-pricing)
+            ("composer-2.5", 5e-7, 2.5e-6, Some(2e-7)),
+            ("composer-2.5-fast", 1.5e-6, 7.5e-6, Some(3.5e-7)),
         ];
 
         let mut overrides = HashMap::with_capacity(entries.len());
@@ -450,6 +455,67 @@ mod tests {
         assert!(
             (with_write - without_write).abs() < 1e-10,
             "Cache creation should be free for Composer 2 Fast"
+        );
+    }
+
+    #[test]
+    fn test_cursor_returns_pricing_for_composer_2_5() {
+        let service = PricingService::new(HashMap::new(), HashMap::new());
+        let result = service.lookup_with_source("composer-2.5", None).unwrap();
+        assert_eq!(result.source, "Cursor");
+        assert_eq!(result.matched_key, "composer-2.5");
+        assert_eq!(result.pricing.input_cost_per_token, Some(5e-7));
+        assert_eq!(result.pricing.output_cost_per_token, Some(2.5e-6));
+        assert_eq!(result.pricing.cache_read_input_token_cost, Some(2e-7));
+        assert_eq!(result.pricing.cache_creation_input_token_cost, None);
+    }
+
+    #[test]
+    fn test_cursor_returns_pricing_for_composer_2_5_fast() {
+        let service = PricingService::new(HashMap::new(), HashMap::new());
+        let result = service
+            .lookup_with_source("composer-2.5-fast", None)
+            .unwrap();
+        assert_eq!(result.source, "Cursor");
+        assert_eq!(result.matched_key, "composer-2.5-fast");
+        assert_eq!(result.pricing.input_cost_per_token, Some(1.5e-6));
+        assert_eq!(result.pricing.output_cost_per_token, Some(7.5e-6));
+        assert_eq!(result.pricing.cache_read_input_token_cost, Some(3.5e-7));
+        assert_eq!(result.pricing.cache_creation_input_token_cost, None);
+    }
+
+    #[test]
+    fn test_cursor_calculate_cost_for_composer_2_5() {
+        let service = PricingService::new(HashMap::new(), HashMap::new());
+        let cost = service.calculate_cost("composer-2.5", 1_000_000, 100_000, 50_000, 0, 0);
+        let expected = 1_000_000.0 * 5e-7 + 100_000.0 * 2.5e-6 + 50_000.0 * 2e-7;
+        assert!((cost - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cursor_calculate_cost_composer_2_5_cache_write_free() {
+        let service = PricingService::new(HashMap::new(), HashMap::new());
+        let with_write = service.calculate_cost("composer-2.5", 0, 0, 0, 500_000, 0);
+        let without_write = service.calculate_cost("composer-2.5", 0, 0, 0, 0, 0);
+        assert!((with_write - without_write).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cursor_calculate_cost_for_composer_2_5_fast() {
+        let service = PricingService::new(HashMap::new(), HashMap::new());
+        let cost = service.calculate_cost("composer-2.5-fast", 1_000_000, 100_000, 50_000, 0, 0);
+        let expected = 1_000_000.0 * 1.5e-6 + 100_000.0 * 7.5e-6 + 50_000.0 * 3.5e-7;
+        assert!((cost - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cursor_calculate_cost_composer_2_5_fast_cache_write_free() {
+        let service = PricingService::new(HashMap::new(), HashMap::new());
+        let with_write = service.calculate_cost("composer-2.5-fast", 0, 0, 0, 500_000, 0);
+        let without_write = service.calculate_cost("composer-2.5-fast", 0, 0, 0, 0, 0);
+        assert!(
+            (with_write - without_write).abs() < 1e-10,
+            "Cache creation should be free for Composer 2.5 Fast"
         );
     }
 
