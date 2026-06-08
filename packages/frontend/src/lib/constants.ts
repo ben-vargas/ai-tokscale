@@ -78,16 +78,16 @@ export const SOURCE_LOGOS: Record<ClientType, string> = {
   kilocode: `${GITHUB_CDN_BASE}/client-kilocode.png`,
   kilo: `${GITHUB_CDN_BASE}/client-kilocode.png`,
   mux: `${GITHUB_CDN_BASE}/client-mux.png`,
-  kiro: "/assets/logos/kiro.ico",
+  kiro: "https://github.com/kirodotdev.png",
   crush: `${GITHUB_CDN_BASE}/client-crush.png`,
   goose: `${GITHUB_CDN_BASE}/client-goose.png`,
   antigravity: `${GITHUB_CDN_BASE}/client-antigravity.png`,
   zed: `${GITHUB_CDN_BASE}/client-zed.webp`,
   trae: `${GITHUB_CDN_BASE}/client-trae.png`,
-  warp: `${GITHUB_CDN_BASE}/client-warp.png`,
-  cline: `${GITHUB_CDN_BASE}/client-cline.png`,
+  warp: "https://github.com/warpdotdev.png",
+  cline: "https://github.com/cline.png",
   synthetic: `${GITHUB_CDN_BASE}/client-synthetic.png`,
-  gjc: `${GITHUB_CDN_BASE}/client-gjc.png`,
+  gjc: "https://github.com/user-attachments/assets/7246e920-f3f8-4b6e-847e-030ae04e86c2",
 };
 
 export const SOURCE_COLORS: Record<ClientType, string> = {
