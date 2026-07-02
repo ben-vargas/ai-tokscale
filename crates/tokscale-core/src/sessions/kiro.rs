@@ -378,17 +378,20 @@ fn collect_kiro_snapshot_text(
 ) {
     match value {
         Value::Object(map) => {
+            // Real IDE-private `.chat` files use "human"/"bot" (with "tool" for
+            // injected context, deliberately left unmatched); other snapshot
+            // shapes use "user"/"assistant" or "prompt"/"response".
             if let Some(kind) = map.get("role").and_then(|v| v.as_str()) {
                 role = match kind {
-                    "user" | "prompt" => Some(KiroSnapshotRole::Prompt),
-                    "assistant" | "response" => Some(KiroSnapshotRole::Assistant),
+                    "user" | "prompt" | "human" => Some(KiroSnapshotRole::Prompt),
+                    "assistant" | "response" | "bot" => Some(KiroSnapshotRole::Assistant),
                     _ => role,
                 };
             }
             if let Some(kind) = map.get("type").and_then(|v| v.as_str()) {
                 role = match kind {
-                    "user" | "prompt" => Some(KiroSnapshotRole::Prompt),
-                    "assistant" | "response" => Some(KiroSnapshotRole::Assistant),
+                    "user" | "prompt" | "human" => Some(KiroSnapshotRole::Prompt),
+                    "assistant" | "response" | "bot" => Some(KiroSnapshotRole::Assistant),
                     _ => role,
                 };
             }
@@ -541,6 +544,19 @@ fn parse_kiro_global_storage_file(path: &Path) -> Vec<UnifiedMessage> {
 
     let snapshot_timestamp = fallback_timestamp;
 
+    // IDE-private `.chat` files carry a top-level executionId referencing the
+    // execution record stored under the sibling execution-store directory
+    // (verified against real globalStorage trees: the same UUID appears as the
+    // `.chat`'s executionId and the execution file's executionId). Tag the
+    // dedup key with it so suppress_snapshots_covered_by_executions can drop
+    // this snapshot when its execution is counted. `try_parse_kiro_execution_file`
+    // already returned above for files that have `actions`, so this only tags
+    // action-less chat/validation artifacts.
+    let dedup_key = match value.get("executionId").and_then(|id| id.as_str()) {
+        Some(execution_id) => format!("{}:globalstorage:exec:{}", session_id, execution_id),
+        None => format!("{}:globalstorage", session_id),
+    };
+
     let mut message = UnifiedMessage::new_with_dedup(
         CLIENT_ID,
         model_id,
@@ -555,7 +571,7 @@ fn parse_kiro_global_storage_file(path: &Path) -> Vec<UnifiedMessage> {
             reasoning: 0,
         },
         0.0,
-        Some(format!("{}:globalstorage", session_id)),
+        Some(dedup_key),
     );
     message.message_count = 1;
     message.is_turn_start = true;
@@ -679,53 +695,64 @@ fn try_parse_kiro_execution_file(value: &Value, path: &Path) -> Option<Vec<Unifi
     Some(vec![message])
 }
 
-/// Drop globalStorage session-snapshot messages whose chat session already has
-/// execution-file coverage.
+/// Drop globalStorage snapshot messages whose execution is already counted.
 ///
-/// Kiro IDE writes both a session snapshot (user prompts + an "On it."
-/// placeholder response) and per-execution files whose `context` carries the
-/// full conversation history, so a snapshot and its executions count the same
-/// prompt text twice. An execution's input is a superset of the snapshot's
-/// content, so the snapshot is redundant once any execution for the same chat
-/// session exists. Suppression requires an exact (workspace, session-id) match
-/// between the execution's `chatSessionId` and the snapshot's file stem — if
-/// Kiro names snapshots differently this pass is a no-op rather than a risk of
-/// dropping unrelated usage.
+/// Kiro IDE's globalStorage (verified against real trees) holds, per workspace
+/// hash directory: `<hash>.chat` artifacts carrying a top-level `executionId`
+/// plus chat/context text, and extensionless execution records (in a nested
+/// store directory) carrying the same `executionId` with the full `context`
+/// history and `actions`. Counting both counts the same conversation text
+/// twice; the execution record's input is a superset of the `.chat` content,
+/// so the `.chat` message is redundant once its execution is present.
+///
+/// Matching is exact and workspace-scoped on the shared `executionId` (with a
+/// legacy fallback matching an execution's `chatSessionId` against a snapshot
+/// file stem). Anything unmatched is kept — the pass can only remove verified
+/// duplicates, never unrelated usage.
 pub(crate) fn suppress_snapshots_covered_by_executions(
     messages: Vec<UnifiedMessage>,
 ) -> Vec<UnifiedMessage> {
-    let executed: std::collections::HashSet<(Option<String>, String)> = messages
-        .iter()
-        .filter(|message| {
-            message
-                .dedup_key
-                .as_deref()
-                .is_some_and(|key| key.starts_with("execution:"))
-        })
-        .map(|message| (message.workspace_key.clone(), message.session_id.clone()))
-        .collect();
-    if executed.is_empty() {
+    let mut executed_sessions: std::collections::HashSet<(Option<String>, String)> =
+        std::collections::HashSet::new();
+    let mut executed_ids: std::collections::HashSet<(Option<String>, String)> =
+        std::collections::HashSet::new();
+    for message in &messages {
+        let Some(execution_id) = message
+            .dedup_key
+            .as_deref()
+            .and_then(|key| key.strip_prefix("execution:"))
+        else {
+            continue;
+        };
+        executed_sessions.insert((message.workspace_key.clone(), message.session_id.clone()));
+        executed_ids.insert((message.workspace_key.clone(), execution_id.to_string()));
+    }
+    if executed_ids.is_empty() {
         return messages;
     }
 
     messages
         .into_iter()
         .filter(|message| {
-            let is_snapshot = message
-                .dedup_key
-                .as_deref()
-                .is_some_and(|key| key.ends_with(":globalstorage"));
-            if !is_snapshot {
+            let Some(key) = message.dedup_key.as_deref() else {
+                return true;
+            };
+            // `.chat` artifacts tagged with the execution they belong to.
+            if let Some((_, execution_id)) = key.split_once(":globalstorage:exec:") {
+                return !executed_ids
+                    .contains(&(message.workspace_key.clone(), execution_id.to_string()));
+            }
+            if !key.ends_with(":globalstorage") {
                 return true;
             }
-            // Snapshot session ids are `<workspace>/<file-stem>` (or bare stem);
-            // the stem is what an execution's chatSessionId would reference.
+            // Legacy fallback: snapshot session ids are `<workspace>/<file-stem>`
+            // (or bare stem); match the stem against execution chatSessionIds.
             let stem = message
                 .session_id
                 .rsplit('/')
                 .next()
                 .unwrap_or(&message.session_id);
-            !executed.contains(&(message.workspace_key.clone(), stem.to_string()))
+            !executed_sessions.contains(&(message.workspace_key.clone(), stem.to_string()))
         })
         .collect()
 }
@@ -1186,6 +1213,128 @@ not valid json at all
 
         let kept = suppress_snapshots_covered_by_executions(messages);
         assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn parse_kiro_chat_artifact_counts_human_and_bot_roles() {
+        // Real IDE-private .chat files use human/bot/tool roles; tool context
+        // is intentionally not counted.
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join(
+            "Kiro/User/globalStorage/kiro.kiroagent/workspace-a/0c433dc89e4c1803dd6fe838634ed7fc.chat",
+        );
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(
+            &file_path,
+            r#"{
+                "executionId": "5b40545a-2539-4334-9411-23df0bfea51b",
+                "actionId": "act",
+                "chat": [
+                    {"role": "human", "content": "please refactor the loader"},
+                    {"role": "tool", "content": "You are operating in a workspace"},
+                    {"role": "bot", "content": "Done, refactored."}
+                ],
+                "metadata": {}
+            }"#,
+        )
+        .unwrap();
+
+        let messages = parse_kiro_file(&file_path);
+
+        assert_eq!(messages.len(), 1);
+        // human: 26 chars -> ceil(26/4) = 7; bot: 17 chars -> ceil(17/4) = 5.
+        // The 32-char tool line is excluded from both.
+        assert_eq!(messages[0].tokens.input, 7);
+        assert_eq!(messages[0].tokens.output, 5);
+    }
+
+    #[test]
+    fn parse_kiro_chat_artifact_tags_dedup_key_with_execution_id() {
+        // Shape observed in real globalStorage trees: `<hash>.chat` carries a
+        // top-level executionId (and NO `actions`, so it must not be parsed as
+        // an execution record).
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join(
+            "Kiro/User/globalStorage/kiro.kiroagent/abc080c47e826767f65b27677d791c66/006924fffc3bc58648f10379cdfd77a6.chat",
+        );
+        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        fs::write(
+            &file_path,
+            r#"{
+                "executionId": "3067e447-2cda-47c9-a476-536a72d92f31",
+                "actionId": "act",
+                "context": {},
+                "chat": [
+                    {"role": "user", "content": "please refactor the config loader"},
+                    {"role": "assistant", "content": "On it."}
+                ],
+                "metadata": {"workflowId": "3e445aa7-f59c-4bf4-a471-c655dad734f5"}
+            }"#,
+        )
+        .unwrap();
+
+        let messages = parse_kiro_file(&file_path);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].dedup_key.as_deref(),
+            Some(
+                "abc080c47e826767f65b27677d791c66/006924fffc3bc58648f10379cdfd77a6:globalstorage:exec:3067e447-2cda-47c9-a476-536a72d92f31"
+            )
+        );
+    }
+
+    #[test]
+    fn suppress_snapshots_drops_chat_artifacts_matching_execution_id() {
+        // Real-world id shapes: `.chat` stems are opaque 32-hex hashes, while
+        // executionId/chatSessionId are dashed UUIDs — so only the executionId
+        // tag can link the two.
+        let ws = "abc080c47e826767f65b27677d791c66";
+        let messages = vec![
+            // Two .chat artifacts for the same execution: both covered.
+            make_globalstorage_message(
+                "abc080c47e826767f65b27677d791c66/006924fffc3bc58648f10379cdfd77a6",
+                "abc080c47e826767f65b27677d791c66/006924fffc3bc58648f10379cdfd77a6:globalstorage:exec:3067e447-2cda-47c9-a476-536a72d92f31",
+                Some(ws),
+            ),
+            make_globalstorage_message(
+                "abc080c47e826767f65b27677d791c66/01e341965ac1caf00a9ecb9cc1635d62",
+                "abc080c47e826767f65b27677d791c66/01e341965ac1caf00a9ecb9cc1635d62:globalstorage:exec:3067e447-2cda-47c9-a476-536a72d92f31",
+                Some(ws),
+            ),
+            // The execution record itself (session id = chatSessionId).
+            make_globalstorage_message(
+                "efddf80a-eab9-4f1c-8a13-877eaac72736",
+                "execution:3067e447-2cda-47c9-a476-536a72d92f31",
+                Some(ws),
+            ),
+            // .chat artifact for an execution that is NOT counted (e.g. failed):
+            // kept.
+            make_globalstorage_message(
+                "abc080c47e826767f65b27677d791c66/0681d950923f98601e198293ca2040fd",
+                "abc080c47e826767f65b27677d791c66/0681d950923f98601e198293ca2040fd:globalstorage:exec:5b40545a-2539-4334-9411-23df0bfea51b",
+                Some(ws),
+            ),
+            // Same execution id but a different workspace: kept.
+            make_globalstorage_message(
+                "other-ws/aaaa",
+                "other-ws/aaaa:globalstorage:exec:3067e447-2cda-47c9-a476-536a72d92f31",
+                Some("other-ws"),
+            ),
+        ];
+
+        let kept = suppress_snapshots_covered_by_executions(messages);
+
+        let keys: Vec<&str> = kept
+            .iter()
+            .filter_map(|message| message.dedup_key.as_deref())
+            .collect();
+        assert_eq!(kept.len(), 3);
+        assert!(keys.contains(&"execution:3067e447-2cda-47c9-a476-536a72d92f31"));
+        assert!(keys.iter().any(|key| key.contains("0681d950")));
+        assert!(keys.iter().any(|key| key.starts_with("other-ws/aaaa")));
+        assert!(!keys.iter().any(|key| key.contains("006924ff")));
+        assert!(!keys.iter().any(|key| key.contains("01e34196")));
     }
 
     #[test]
