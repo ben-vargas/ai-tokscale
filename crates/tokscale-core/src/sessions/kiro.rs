@@ -679,6 +679,57 @@ fn try_parse_kiro_execution_file(value: &Value, path: &Path) -> Option<Vec<Unifi
     Some(vec![message])
 }
 
+/// Drop globalStorage session-snapshot messages whose chat session already has
+/// execution-file coverage.
+///
+/// Kiro IDE writes both a session snapshot (user prompts + an "On it."
+/// placeholder response) and per-execution files whose `context` carries the
+/// full conversation history, so a snapshot and its executions count the same
+/// prompt text twice. An execution's input is a superset of the snapshot's
+/// content, so the snapshot is redundant once any execution for the same chat
+/// session exists. Suppression requires an exact (workspace, session-id) match
+/// between the execution's `chatSessionId` and the snapshot's file stem — if
+/// Kiro names snapshots differently this pass is a no-op rather than a risk of
+/// dropping unrelated usage.
+pub(crate) fn suppress_snapshots_covered_by_executions(
+    messages: Vec<UnifiedMessage>,
+) -> Vec<UnifiedMessage> {
+    let executed: std::collections::HashSet<(Option<String>, String)> = messages
+        .iter()
+        .filter(|message| {
+            message
+                .dedup_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("execution:"))
+        })
+        .map(|message| (message.workspace_key.clone(), message.session_id.clone()))
+        .collect();
+    if executed.is_empty() {
+        return messages;
+    }
+
+    messages
+        .into_iter()
+        .filter(|message| {
+            let is_snapshot = message
+                .dedup_key
+                .as_deref()
+                .is_some_and(|key| key.ends_with(":globalstorage"));
+            if !is_snapshot {
+                return true;
+            }
+            // Snapshot session ids are `<workspace>/<file-stem>` (or bare stem);
+            // the stem is what an execution's chatSessionId would reference.
+            let stem = message
+                .session_id
+                .rsplit('/')
+                .next()
+                .unwrap_or(&message.session_id);
+            !executed.contains(&(message.workspace_key.clone(), stem.to_string()))
+        })
+        .collect()
+}
+
 pub fn parse_kiro_sqlite(db_path: &Path) -> Vec<UnifiedMessage> {
     let conn = match Connection::open_with_flags(
         db_path,
@@ -1060,6 +1111,81 @@ not valid json at all
         // 1770983426 seconds -> 1770983426000 ms -> 2026, not 1970.
         assert_eq!(messages[0].timestamp, 1770983426000);
         assert!(messages[0].date.starts_with("2026-"));
+    }
+
+    fn make_globalstorage_message(
+        session_id: &str,
+        dedup_key: &str,
+        workspace: Option<&str>,
+    ) -> UnifiedMessage {
+        let mut message = UnifiedMessage::new_with_dedup(
+            CLIENT_ID,
+            "auto".to_string(),
+            PROVIDER_ID,
+            session_id.to_string(),
+            1_770_983_426_000,
+            TokenBreakdown {
+                input: 100,
+                output: 10,
+                cache_read: 0,
+                cache_write: 0,
+                reasoning: 0,
+            },
+            0.0,
+            Some(dedup_key.to_string()),
+        );
+        message.set_workspace(workspace.map(str::to_string), workspace.map(str::to_string));
+        message
+    }
+
+    #[test]
+    fn suppress_snapshots_covered_by_executions_drops_only_exact_matches() {
+        let messages = vec![
+            // Snapshot for chat-abc in workspace-a: covered by the execution below.
+            make_globalstorage_message(
+                "workspace-a/chat-abc",
+                "workspace-a/chat-abc:globalstorage",
+                Some("workspace-a"),
+            ),
+            // Execution for the same chat session and workspace.
+            make_globalstorage_message("chat-abc", "execution:exec-1", Some("workspace-a")),
+            // Snapshot with a different stem: kept.
+            make_globalstorage_message(
+                "workspace-a/other-session",
+                "workspace-a/other-session:globalstorage",
+                Some("workspace-a"),
+            ),
+            // Same stem but different workspace: kept.
+            make_globalstorage_message(
+                "workspace-b/chat-abc",
+                "workspace-b/chat-abc:globalstorage",
+                Some("workspace-b"),
+            ),
+        ];
+
+        let kept = suppress_snapshots_covered_by_executions(messages);
+
+        let keys: Vec<&str> = kept
+            .iter()
+            .filter_map(|message| message.dedup_key.as_deref())
+            .collect();
+        assert_eq!(kept.len(), 3);
+        assert!(keys.contains(&"execution:exec-1"));
+        assert!(keys.contains(&"workspace-a/other-session:globalstorage"));
+        assert!(keys.contains(&"workspace-b/chat-abc:globalstorage"));
+        assert!(!keys.contains(&"workspace-a/chat-abc:globalstorage"));
+    }
+
+    #[test]
+    fn suppress_snapshots_is_noop_without_executions() {
+        let messages = vec![make_globalstorage_message(
+            "workspace-a/chat-abc",
+            "workspace-a/chat-abc:globalstorage",
+            Some("workspace-a"),
+        )];
+
+        let kept = suppress_snapshots_covered_by_executions(messages);
+        assert_eq!(kept.len(), 1);
     }
 
     #[test]

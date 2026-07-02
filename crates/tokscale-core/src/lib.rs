@@ -1496,12 +1496,19 @@ fn parse_all_messages_with_pricing_with_env_strategy(
             })
         })
         .collect();
+    // Collect Kiro file messages before extending so snapshot suppression can
+    // see execution coverage across files (it is a cross-file merge concern,
+    // like merge_workbuddy_messages, and must run after cache loads).
+    let mut kiro_file_messages: Vec<UnifiedMessage> = Vec::new();
     for outcome in kiro_outcomes {
-        all_messages.extend(outcome.messages);
+        kiro_file_messages.extend(outcome.messages);
         if let Some(entry) = outcome.cache_entry {
             source_cache.insert(entry);
         }
     }
+    all_messages.extend(sessions::kiro::suppress_snapshots_covered_by_executions(
+        kiro_file_messages,
+    ));
 
     if let Some(db_path) = &scan_result.kiro_db {
         let kiro_db_messages: Vec<UnifiedMessage> = sessions::kiro::parse_kiro_sqlite(db_path)
@@ -2858,16 +2865,16 @@ pub fn parse_local_clients(options: LocalParseOptions) -> Result<ParsedMessages,
         messages.extend(zed_msgs);
     }
 
-    let kiro_msgs: Vec<ParsedMessage> = scan_result
+    let kiro_unified: Vec<UnifiedMessage> = scan_result
         .get(ClientId::Kiro)
         .par_iter()
-        .flat_map(|path| {
-            sessions::kiro::parse_kiro_file(path)
-                .into_iter()
-                .map(|msg| unified_to_parsed(&msg))
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|path| sessions::kiro::parse_kiro_file(path))
         .collect();
+    let kiro_msgs: Vec<ParsedMessage> =
+        sessions::kiro::suppress_snapshots_covered_by_executions(kiro_unified)
+            .iter()
+            .map(unified_to_parsed)
+            .collect();
     let kiro_count = summed_parsed_message_count(&kiro_msgs);
     counts.set(ClientId::Kiro, kiro_count);
     messages.extend(kiro_msgs);
