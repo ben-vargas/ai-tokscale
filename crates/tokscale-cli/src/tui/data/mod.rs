@@ -7,8 +7,8 @@ use tokio::runtime::{Handle, Runtime};
 
 use tokscale_core::sessions::UnifiedMessage;
 use tokscale_core::{
-    normalize_model_for_grouping, parse_local_unified_messages, sessions, ClientId, GroupBy,
-    LocalParseOptions, ModelPerformance,
+    model_name_for_grouping, normalize_model_for_grouping, parse_local_unified_messages, sessions,
+    ClientId, GroupBy, LocalParseOptions, ModelPerformance,
 };
 
 /// Returns the scanner settings that `DataLoader` should use when building
@@ -48,6 +48,7 @@ impl TokenBreakdown {
 #[derive(Debug, Clone)]
 pub struct ModelUsage {
     pub model: String,
+    pub color_key: String,
     pub provider: String,
     pub client: String,
     pub workspace_key: Option<String>,
@@ -457,7 +458,9 @@ impl DataLoader {
         let mut session_map: HashMap<String, SessionUsage> = HashMap::new();
 
         for msg in &messages {
-            let normalized_model = normalize_model_for_grouping(&msg.model_id);
+            let normalized_model =
+                model_name_for_grouping(&msg.client, &msg.provider_id, &msg.model_id);
+            let model_key = normalize_model_for_grouping(&msg.model_id);
             let (workspace_group_key, workspace_key, workspace_label) = workspace_bucket(msg);
             let key = match group_by {
                 GroupBy::Model => normalized_model.clone(),
@@ -477,6 +480,7 @@ impl DataLoader {
 
             let model_entry = model_map.entry(key.clone()).or_insert_with(|| ModelUsage {
                 model: normalized_model.clone(),
+                color_key: model_key.clone(),
                 provider: msg.provider_id.clone(),
                 client: msg.client.clone(),
                 workspace_key: if *group_by == GroupBy::WorkspaceModel {
@@ -683,7 +687,7 @@ impl DataLoader {
                             &msg.provider_id,
                             &normalized_model,
                         ),
-                        color_key: model_color_key(group_by, &msg.provider_id, &normalized_model),
+                        color_key: model_color_key(group_by, &msg.provider_id, &model_key),
                         tokens: TokenBreakdown::default(),
                         cost: 0.0,
                         messages: 0,
@@ -773,7 +777,7 @@ impl DataLoader {
                             &msg.provider_id,
                             &normalized_model,
                         ),
-                        color_key: model_color_key(group_by, &msg.provider_id, &normalized_model),
+                        color_key: model_color_key(group_by, &msg.provider_id, &model_key),
                         tokens: TokenBreakdown::default(),
                         cost: 0.0,
                     });
@@ -867,11 +871,7 @@ impl DataLoader {
                                 &msg.provider_id,
                                 &normalized_model,
                             ),
-                            color_key: model_color_key(
-                                group_by,
-                                &msg.provider_id,
-                                &normalized_model,
-                            ),
+                            color_key: model_color_key(group_by, &msg.provider_id, &model_key),
                             tokens: TokenBreakdown::default(),
                             cost: 0.0,
                         });
